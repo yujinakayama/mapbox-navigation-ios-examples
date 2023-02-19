@@ -22,11 +22,24 @@ class ElectronicHorizonEventsViewController: UIViewController {
     private let traversedRouteColor: UIColor = .clear
     private var totalDistance: CLLocationDistance = 0.0
 
+    var roadObjectStore: RoadObjectStore {
+        return passiveLocationManager.roadObjectStore
+    }
+
+    let myRoadObjectPolygon = Polygon([[
+        LocationCoordinate2D(latitude: 35.461721760959406, longitude: 139.87926747747304),
+        LocationCoordinate2D(latitude: 35.46085662774896,  longitude: 139.87840917058827),
+        LocationCoordinate2D(latitude: 35.46479936316225,  longitude: 139.87277450781156),
+        LocationCoordinate2D(latitude: 35.46557707147994,  longitude: 139.8735577128439),
+        LocationCoordinate2D(latitude: 35.461721760959406, longitude: 139.87926747747304),
+    ]])
+
     override func viewDidLoad() {
         super.viewDidLoad()
         
         setupNavigationMapView()
         setupUpcomingIntersectionLabel()
+        setupMyRoadObject()
         setupElectronicHorizonUpdates()
     }
 
@@ -36,14 +49,20 @@ class ElectronicHorizonEventsViewController: UIViewController {
         navigationMapView.userLocationStyle = .puck2D()
         navigationMapView.mapView.mapboxMap.onNext(event: .styleLoaded, handler: { [weak self] _ in
             self?.setupMostProbablePathStyle()
+            self?.setupMyRoadObjectStyle()
         })
         
         view.addSubview(navigationMapView)
     }
-    
+
+    func setupMyRoadObject() {
+        passiveLocationManager.roadObjectMatcher.delegate = self
+        passiveLocationManager.roadObjectMatcher.match(polygon: myRoadObjectPolygon, identifier: "myRoadObjectIdentifier")
+    }
+
     func setupElectronicHorizonUpdates() {
         // Customize the `ElectronicHorizonOptions` for `PassiveLocationManager` to start Electronic Horizon updates.
-        let options = ElectronicHorizonOptions(length: 500, expansionLevel: 1, branchLength: 50, minTimeDeltaBetweenUpdates: nil)
+        let options = ElectronicHorizonOptions(length: 500, expansionLevel: 1, branchLength: 500, minTimeDeltaBetweenUpdates: 3)
         passiveLocationManager.startUpdatingElectronicHorizon(with: options)
         subscribeToElectronicHorizonUpdates()
     }
@@ -93,6 +112,24 @@ class ElectronicHorizonEventsViewController: UIViewController {
         updateMostProbablePathLayer(fractionFromStart: position.fractionFromStart,
                                     roadGraph: passiveLocationManager.roadGraph,
                                     currentEdge: horizonTree.identifier)
+
+        printUpcomingRoadObjects(horizonTree: horizonTree)
+    }
+
+    func printUpcomingRoadObjects(horizonTree: RoadGraph.Edge) {
+        let allEdges = extractAllEdges(from: horizonTree)
+        let allEdgeIdentifiers = allEdges.map { $0.identifier }
+        let roadObjectIdentifiers = roadObjectStore.roadObjectIdentifiers(edgeIdentifiers: allEdgeIdentifiers)
+        let roadObjects = roadObjectIdentifiers.compactMap { roadObjectStore.roadObject(identifier: $0) }
+
+        print("=============== upcoming road objects ===============")
+        roadObjects.forEach { roadObject in
+            print("kind: \(roadObject.kind) isUserDefined: \(roadObject.isUserDefined) id: \(roadObject.identifier)")
+        }
+    }
+
+    func extractAllEdges(from edge: RoadGraph.Edge) -> [RoadGraph.Edge] {
+        return [edge] + edge.outletEdges.flatMap { extractAllEdges(from: $0) }
     }
 
     private func streetName(for edge: RoadGraph.Edge) -> String? {
@@ -197,7 +234,20 @@ class ElectronicHorizonEventsViewController: UIViewController {
         layer.minZoom = 9
         try? navigationMapView.mapView.mapboxMap.style.addLayer(layer)
     }
-    
+
+    private func setupMyRoadObjectStyle() {
+        let sourceIdentifier = "myRoadObjectSource"
+        var source = GeoJSONSource()
+        source.data = .geometry(Geometry.polygon(myRoadObjectPolygon))
+        try? navigationMapView.mapView.mapboxMap.style.addSource(source, id: sourceIdentifier)
+
+        var layer = FillLayer(id: "myRoadObjectLayer")
+        layer.source = sourceIdentifier
+        layer.fillColor = .constant(.init(.red))
+        layer.fillOpacity = .constant(0.5)
+        try? navigationMapView.mapView.mapboxMap.style.addLayer(layer)
+    }
+
     // Update the line gradient property of the most probable path line layer,
     // so the part of the most probable path that has been traversed will be rendered with full transparency.
     private func updateMostProbablePathLayerFraction(_ fraction: Double) {
@@ -217,5 +267,20 @@ class ElectronicHorizonEventsViewController: UIViewController {
                                                                             property: "line-gradient",
                                                                             value: jsonObject)
         }
+    }
+}
+
+extension ElectronicHorizonEventsViewController: RoadObjectMatcherDelegate {
+    func roadObjectMatcher(_ matcher: MapboxCoreNavigation.RoadObjectMatcher, didMatch roadObject: MapboxCoreNavigation.RoadObject) {
+        print(#function)
+        roadObjectStore.addUserDefinedRoadObject(roadObject)
+    }
+
+    func roadObjectMatcher(_ matcher: MapboxCoreNavigation.RoadObjectMatcher, didFailToMatchWith error: MapboxCoreNavigation.RoadObjectMatcherError) {
+        print(#function)
+    }
+
+    func roadObjectMatcher(_ matcher: MapboxCoreNavigation.RoadObjectMatcher, didCancelMatchingFor id: String) {
+        print(#function)
     }
 }
